@@ -1,4 +1,4 @@
-module socket/client
+module socket/client-comprador
 
 go 1.18
 

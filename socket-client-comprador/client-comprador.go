@@ -12,12 +12,29 @@ import (
 type Vendedor struct {
 	Nome  string `json:"nome"`
 	Email string `json:"email"`
+	Role  string `json:"role"`
 }
 
 type ItemLeilao struct {
 	Nome      string `json:"nome"`
 	Descricao string `json:"descricao"`
 	Valor     string `json:"valor"`
+}
+
+type Message struct {
+	Operacao string `json:"operacao"`
+	Message  []byte `json:"message"`
+}
+
+type ItemLeilaoCliente struct {
+	Id   string
+	Nome string
+}
+type MessageListaDeLeiloes struct {
+	Leiloes []ItemLeilaoCliente `json:"leiloes"`
+}
+type MessageEncerrarLeilao struct {
+	Id string `json:"id"`
 }
 
 const (
@@ -37,6 +54,7 @@ func main() {
 	vendedor, _ := json.Marshal(&Vendedor{
 		Nome:  nome,
 		Email: email,
+		Role:  "vendedor",
 	})
 
 	_, err = connection.Write(vendedor)
@@ -51,7 +69,13 @@ func main() {
 	fmt.Println("Received: ", string(buffer[:mLen]))
 
 	defer connection.Close()
+	defer func() {
+		if err := recover(); err != nil {
+			fmt.Println("Ocorreu um erro na conexão do cliente ou cliente se desconectou: ", err)
+		}
+	}()
 	for {
+
 		prompt := promptui.Select{
 			Label: "Selecione a operação",
 			Items: []string{"Iniciar Leilao", "Encerrar Leilao", "Sair"},
@@ -74,20 +98,55 @@ func handleUserResponse(response string, connection net.Conn) {
 			Descricao: descricao,
 			Valor:     valorInicial,
 		})
-		_, err := connection.Write(item)
-		handleError(err, "Erro ao criar leilão: %v\n")
+		message, _ := json.Marshal(&Message{
+			Operacao: "CRIAR_LEILAO",
+			Message:  item,
+		})
+		sendMessageToServer(connection, message, "Erro ao criar leilão: %v\n")
+		receivedMessage := receiveMessageFromServer(connection)
+		fmt.Println("Received from server: " + receivedMessage)
 		return
 	case "Encerrar Leilao":
+		messageListarLeiloes, _ := json.Marshal(&Message{
+			Operacao: "LISTAR_LEILOES",
+			Message:  make([]byte, 0),
+		})
+		sendMessageToServer(connection, messageListarLeiloes, "Erro ao listar leilões: %v\n")
+		receivedLeiloesMessage := receiveMessageFromServer(connection)
+		var jsonMsg MessageListaDeLeiloes
+		json.Unmarshal([]byte(receivedLeiloesMessage), &jsonMsg)
+		listaLeiloes := jsonMsg.Leiloes
+		if len(listaLeiloes) == 0 {
+			fmt.Println("Não há leilões disponíveis")
+			return
+		}
 		prompt := promptui.Select{
 			Label: "Selecione o leilão a encerrar",
-			Items: []string{"Fiesta 2005", "NFT Macaco"},
+			Items: listaLeiloes,
 		}
-		_, result, err := prompt.Run()
+		i, _, err := prompt.Run()
 
 		handleError(err, "Erro ao encerrar leilão: %v\n")
-		fmt.Printf("O leilão do item %q foi encerrado\n", result)
+
+		idLeilao, _ := json.Marshal(&MessageEncerrarLeilao{
+			Id: listaLeiloes[i].Id,
+		})
+
+		messageEncerrarLeilao, _ := json.Marshal(&Message{
+			Operacao: "ENCERRAR_LEILAO",
+			Message:  idLeilao,
+		})
+		sendMessageToServer(connection, messageEncerrarLeilao, "Erro ao encerrar leilão: %v\n")
+
+		receivedEncerramentoMessage := receiveMessageFromServer(connection)
+		fmt.Print(receivedEncerramentoMessage + "\n")
 		return
 	case "Sair":
+		messageEncerrarLeilao, _ := json.Marshal(&Message{
+			Operacao: "SAIR",
+			Message:  make([]byte, 0),
+		})
+		sendMessageToServer(connection, messageEncerrarLeilao, "Erro ao encerrar leilão: %v\n")
 		os.Exit(0)
 	}
 }
@@ -137,4 +196,24 @@ func handleError(err error, message string) {
 		fmt.Printf(message, err.Error())
 		panic(err)
 	}
+}
+
+func handleConnectionError(connection net.Conn, err error, message string) {
+	if err != nil {
+		handleError(err, message)
+		connection.Close()
+		panic(err)
+	}
+}
+
+func sendMessageToServer(connection net.Conn, message []byte, errorMessage string) {
+	_, err := connection.Write(message)
+	handleError(err, errorMessage)
+}
+
+func receiveMessageFromServer(connection net.Conn) string {
+	buffer := make([]byte, 1024)
+	mLen, err := connection.Read(buffer)
+	handleConnectionError(connection, err, "Perdemos a conexão com o servidor")
+	return string(buffer[:mLen])
 }
