@@ -27,9 +27,17 @@ type Message struct {
 }
 
 type ItemLeilaoCliente struct {
-	Id   string
-	Nome string
+	Id            string `json:"id"`
+	Nome          string `json:"nome"`
+	Descricao     string `json:"descricao"`
+	ApostaVigente Aposta `json:"apostaVigente"`
 }
+
+type Aposta struct {
+	EmailApostador string `json:"emailApostador"`
+	Valor          string `json:"valor"`
+}
+
 type MessageListaDeLeiloes struct {
 	Leiloes []ItemLeilaoCliente `json:"leiloes"`
 }
@@ -54,7 +62,7 @@ func main() {
 	vendedor, _ := json.Marshal(&Vendedor{
 		Nome:  nome,
 		Email: email,
-		Role:  "vendedor",
+		Role:  "comprador",
 	})
 
 	_, err = connection.Write(vendedor)
@@ -78,7 +86,7 @@ func main() {
 
 		prompt := promptui.Select{
 			Label: "Selecione a operação",
-			Items: []string{"Iniciar Leilao", "Encerrar Leilao", "Sair"},
+			Items: []string{"Listar Artigos", "Dar Lance", "Sair"},
 		}
 		_, result, err := prompt.Run()
 
@@ -91,22 +99,30 @@ func main() {
 
 func handleUserResponse(response string, connection net.Conn) {
 	switch response {
-	case "Iniciar Leilao":
-		nome, descricao, valorInicial := promptAuctionDetails()
-		item, _ := json.Marshal(&ItemLeilao{
-			Nome:      nome,
-			Descricao: descricao,
-			Valor:     valorInicial,
+	case "Listar Artigos":
+		messageListarLeiloes, _ := json.Marshal(&Message{
+			Operacao: "LISTAR_LEILOES",
+			Message:  make([]byte, 0),
 		})
-		message, _ := json.Marshal(&Message{
-			Operacao: "CRIAR_LEILAO",
-			Message:  item,
-		})
-		sendMessageToServer(connection, message, "Erro ao criar leilão: %v\n")
-		receivedMessage := receiveMessageFromServer(connection)
-		fmt.Println("Received from server: " + receivedMessage)
+		sendMessageToServer(connection, messageListarLeiloes, "Erro ao listar leilões: %v\n")
+		receivedLeiloesMessage := receiveMessageFromServer(connection)
+		var jsonMsg MessageListaDeLeiloes
+		json.Unmarshal([]byte(receivedLeiloesMessage), &jsonMsg)
+		listaLeiloes := jsonMsg.Leiloes
+		if len(listaLeiloes) == 0 {
+			fmt.Println("Não há leilões disponíveis")
+			return
+		}
+
+		for _, leilao := range listaLeiloes {
+			maiorLance := "Sem lances"
+			if len(leilao.ApostaVigente.Valor) > 0 {
+				maiorLance = leilao.ApostaVigente.Valor
+			}
+			fmt.Printf("Id: %s - Nome: %s - Descricao: %s - Maior Lance: %s\n", leilao.Id, leilao.Nome, leilao.Descricao, maiorLance)
+		}
 		return
-	case "Encerrar Leilao":
+	case "Dar Lance":
 		messageListarLeiloes, _ := json.Marshal(&Message{
 			Operacao: "LISTAR_LEILOES",
 			Message:  make([]byte, 0),
@@ -121,12 +137,12 @@ func handleUserResponse(response string, connection net.Conn) {
 			return
 		}
 		prompt := promptui.Select{
-			Label: "Selecione o leilão a encerrar",
+			Label: "Selecione o leilão a dar o lance",
 			Items: listaLeiloes,
 		}
 		i, _, err := prompt.Run()
 
-		handleError(err, "Erro ao encerrar leilão: %v\n")
+		handleError(err, "Erro ao dar lance: %v\n")
 
 		idLeilao, _ := json.Marshal(&MessageEncerrarLeilao{
 			Id: listaLeiloes[i].Id,
@@ -216,4 +232,9 @@ func receiveMessageFromServer(connection net.Conn) string {
 	mLen, err := connection.Read(buffer)
 	handleConnectionError(connection, err, "Perdemos a conexão com o servidor")
 	return string(buffer[:mLen])
+}
+
+func prettyPrint(i interface{}) string {
+	s, _ := json.MarshalIndent(i, "", "\t")
+	return string(s)
 }

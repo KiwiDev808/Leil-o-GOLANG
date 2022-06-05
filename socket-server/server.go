@@ -46,22 +46,34 @@ type MessageCriarLeilao struct {
 	Valor     string `json:"valor"`
 }
 
-type MessageRespostaListarLeiloes struct {
-	Leiloes []ItemLeilaoCliente `json:"leiloes"`
+type MessageRespostaListarLeiloesVendedor struct {
+	Leiloes []ItemLeilaoVendedor `json:"leiloes"`
 }
 
-type ItemLeilaoCliente struct {
+type MessageRespostaListarLeiloesComprador struct {
+	Leiloes []ItemLeilaoComprador `json:"leiloes"`
+}
+
+type ItemLeilaoVendedor struct {
 	Id   string
 	Nome string
 }
+
+type ItemLeilaoComprador struct {
+	Id            string
+	Nome          string
+	Descricao     string
+	ApostaVigente Aposta
+}
+
 type ItemLeilaoDB struct {
-	Id             string
-	IdVendedor     string
-	Nome           string
-	Descricao      string
-	EmailApostador string
-	ValorAposta    string
-	Status         string
+	Id            string
+	IdVendedor    string
+	Nome          string
+	Descricao     string
+	ApostaVigente Aposta
+	ValorInicial  int
+	Status        string
 }
 
 type Aposta struct {
@@ -104,7 +116,7 @@ func processClient(connection net.Conn) {
 		go handleVendedor(connection, cliente)
 		fmt.Println("Vendedor")
 	} else {
-		go handleComprador(connection)
+		go handleComprador(connection, cliente)
 		fmt.Println("Comprador")
 	}
 
@@ -154,17 +166,37 @@ func handleAuthentication(connection net.Conn) DbCliente {
 func clienteExiste(cliente MessageCriarCliente) (interface{}, bool) {
 	for _, value := range clientes {
 
-		if value.Email == cliente.Email && value.Nome == cliente.Nome {
+		if value.Email == cliente.Email && value.Nome == cliente.Nome && value.Role == cliente.Role {
 			return value, true
 		}
 	}
 	return nil, false
 }
 
-func handleComprador(connection net.Conn) {
+func handleComprador(connection net.Conn, comprador DbCliente) {
 	for {
 		message := handleSocketMessage(connection)
-		fmt.Println("Received: ", message)
+		var jsonMsg Message
+		json.Unmarshal([]byte(message), &jsonMsg)
+		switch jsonMsg.Operacao {
+		case "LISTAR_LEILOES":
+			var leiloesAEnviar []ItemLeilaoComprador
+			for i, ild := range itensLeilaoDB {
+				if ild.Status == LEILAO_ATIVO {
+					leiloesAEnviar = append(leiloesAEnviar, ItemLeilaoComprador{
+						Id:            itensLeilaoDB[i].Id,
+						Nome:          itensLeilaoDB[i].Nome,
+						Descricao:     itensLeilaoDB[i].Descricao,
+						ApostaVigente: itensLeilaoDB[i].ApostaVigente,
+					})
+				}
+			}
+
+			message, _ := json.Marshal(&MessageRespostaListarLeiloesComprador{
+				Leiloes: leiloesAEnviar,
+			})
+			sendMessageToClient(connection, string(message))
+		}
 	}
 }
 
@@ -177,14 +209,18 @@ func handleVendedor(connection net.Conn, vendedor DbCliente) {
 		case "CRIAR_LEILAO":
 			var itemLeilao MessageCriarLeilao
 			json.Unmarshal(jsonMsg.Message, &itemLeilao)
+			valorInicial, err := strconv.Atoi(itemLeilao.Valor)
+			if err != nil {
+				valorInicial = 0
+				fmt.Println("Erro ao converter valor")
+			}
 			itemLeilaoDB := ItemLeilaoDB{
-				Id:             generateRandomId(),
-				Nome:           itemLeilao.Nome,
-				Descricao:      itemLeilao.Descricao,
-				IdVendedor:     vendedor.Id,
-				EmailApostador: "",
-				ValorAposta:    itemLeilao.Valor,
-				Status:         LEILAO_ATIVO,
+				Id:           generateRandomId(),
+				Nome:         itemLeilao.Nome,
+				Descricao:    itemLeilao.Descricao,
+				IdVendedor:   vendedor.Id,
+				ValorInicial: valorInicial,
+				Status:       LEILAO_ATIVO,
 			}
 			itensLeilaoDB = append(itensLeilaoDB, itemLeilaoDB)
 			message := vendedor.Nome + " o leilao com o item " + itemLeilao.Nome + " foi criado com sucesso"
@@ -209,25 +245,25 @@ func handleVendedor(connection net.Conn, vendedor DbCliente) {
 			}
 			var message string
 
-			if foundItem.EmailApostador != "" {
-				message = vendedor.Nome + " o leilao com o item " + foundItem.Nome + " foi encerrado com sucesso e o vencedor foi " + foundItem.EmailApostador + " com o valor " + foundItem.ValorAposta
+			if foundItem.ApostaVigente.EmailApostador != "" {
+				message = vendedor.Nome + " o leilao com o item " + foundItem.Nome + " foi encerrado com sucesso e o vencedor foi " + foundItem.ApostaVigente.Valor + " com o valor " + string(foundItem.ApostaVigente.Valor)
 			} else {
 				message = vendedor.Nome + " o leilao com o item " + foundItem.Nome + " foi encerrado com sucesso mas não teve lances"
 			}
 
 			sendMessageToClient(connection, message)
 		case "LISTAR_LEILOES":
-			var leiloesAEnviar []ItemLeilaoCliente
+			var leiloesAEnviar []ItemLeilaoVendedor
 			for i, ild := range itensLeilaoDB {
 				if ild.Status == LEILAO_ATIVO && ild.IdVendedor == vendedor.Id {
-					leiloesAEnviar = append(leiloesAEnviar, ItemLeilaoCliente{
+					leiloesAEnviar = append(leiloesAEnviar, ItemLeilaoVendedor{
 						Id:   itensLeilaoDB[i].Id,
 						Nome: itensLeilaoDB[i].Nome,
 					})
 				}
 			}
 
-			message, _ := json.Marshal(&MessageRespostaListarLeiloes{
+			message, _ := json.Marshal(&MessageRespostaListarLeiloesVendedor{
 				Leiloes: leiloesAEnviar,
 			})
 			sendMessageToClient(connection, string(message))
