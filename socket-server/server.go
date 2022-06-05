@@ -63,6 +63,7 @@ type ItemLeilaoComprador struct {
 	Id            string
 	Nome          string
 	Descricao     string
+	ValorInicial int
 	ApostaVigente Aposta
 }
 
@@ -76,22 +77,29 @@ type ItemLeilaoDB struct {
 	Status        string
 }
 
+
 type Aposta struct {
 	EmailApostador string
-	Valor          string
+	Valor          int
 }
+
+type MessageDarLance struct {
+	Id string `json:"id"`
+	Valor int `json:"valor"`
+}
+
 
 var itensLeilaoDB []ItemLeilaoDB
 var clientes []DbCliente
 
 func main() {
-	fmt.Println("Server Running...")
+	fmt.Println("[LEILAO_SERVER] Servidor rodando...")
 	server, err := net.Listen(SERVER_TYPE, SERVER_HOST+":"+SERVER_PORT)
-	handleError(err, "Error listening:")
+	handleError(err, "Erro ao escutar host:")
 
 	defer server.Close()
-	fmt.Println("Listening on " + SERVER_HOST + ":" + SERVER_PORT)
-	fmt.Println("Waiting for client...")
+	fmt.Println("[LEILAO_SERVER] Escutando em " + SERVER_HOST + ":" + SERVER_PORT)
+	fmt.Println("[LEILAO_SERVER] Esperando conexões...")
 	for {
 		connection, err := server.Accept()
 
@@ -101,45 +109,42 @@ func main() {
 			continue
 		}
 
-		fmt.Println("client connected")
+		fmt.Println("[LEILAO_SERVER] Conexão aceita do cliente: ", connection.RemoteAddr())
 		go processClient(connection)
 	}
 }
 func processClient(connection net.Conn) {
 	defer func() {
 		if err := recover(); err != nil {
-			fmt.Println("Ocorreu um erro na conexão do cliente ou cliente se desconectou: ", err)
+			fmt.Println("[LEILAO_SERVER] Ocorreu um erro com a conexão do cliente:",connection.RemoteAddr(), "o erro foi:", err)
 		}
 	}()
 	cliente := handleAuthentication(connection)
 	if cliente.Role == "vendedor" {
-		go handleVendedor(connection, cliente)
-		fmt.Println("Vendedor")
+		handleVendedor(connection, cliente)
 	} else {
-		go handleComprador(connection, cliente)
-		fmt.Println("Comprador")
+		handleComprador(connection, cliente)
 	}
-
 }
 
 func handleError(err error, message string) {
 	if err != nil {
-		fmt.Println(message, err.Error())
+		fmt.Println("[LEILAO_SERVER] "+ message, err.Error())
 	}
 }
 
 func handleConnectionError(connection net.Conn, err error, message string) {
 	if err != nil {
-		handleError(err, message)
+		handleError(err, "[CONNECTION_ERROR]: " + message)
 		connection.Close()
-		panic(err)
+		panic(err.Error())
 	}
 }
 
 func handleAuthentication(connection net.Conn) DbCliente {
 	buffer := make([]byte, 1024)
 	mLen, err := connection.Read(buffer)
-	fmt.Println("Cliente conectado: ", string(buffer[:mLen]))
+	fmt.Println("[LEILAO_SERVER] Cliente conectado: ", string(buffer[:mLen]))
 	handleConnectionError(connection, err, "Error reading")
 
 	var cliente MessageCriarCliente
@@ -148,10 +153,10 @@ func handleAuthentication(connection net.Conn) DbCliente {
 	handleConnectionError(connection, err, "Error writing")
 	dbCliente, exists := clienteExiste(cliente)
 	if exists {
-		fmt.Println("Cliente já existe")
+		fmt.Println("[LEILAO_SERVER] Cliente já existe", cliente)
 		return dbCliente.(DbCliente)
 	}
-	fmt.Println("Novo cliente adicionado")
+	fmt.Println("[LEILAO_SERVER] Novo cliente adicionado", cliente)
 
 	novoCliente := &DbCliente{
 		Nome:  cliente.Nome,
@@ -188,6 +193,7 @@ func handleComprador(connection net.Conn, comprador DbCliente) {
 						Nome:          itensLeilaoDB[i].Nome,
 						Descricao:     itensLeilaoDB[i].Descricao,
 						ApostaVigente: itensLeilaoDB[i].ApostaVigente,
+						ValorInicial: itensLeilaoDB[i].ValorInicial,
 					})
 				}
 			}
@@ -196,6 +202,47 @@ func handleComprador(connection net.Conn, comprador DbCliente) {
 				Leiloes: leiloesAEnviar,
 			})
 			sendMessageToClient(connection, string(message))
+		case "DAR_LANCE":
+			var lanceLeilao MessageDarLance
+			json.Unmarshal(jsonMsg.Message, &lanceLeilao)
+			fmt.Println("[LEILAO_SERVER]: Leilao recebido", lanceLeilao)
+			var ehMaiorLance bool
+			maiorQueValorInicial := true
+			for i, value := range itensLeilaoDB {
+				if value.Id == lanceLeilao.Id {
+					fmt.Println("[LEILAO_SERVER]: Leilao encontrado", value)
+
+					apostaAtual := itensLeilaoDB[i].ApostaVigente
+					fmt.Println("[LEILAO_SERVER]: Valor da aposta atual do artigo" + value.Nome + ": ", apostaAtual.Valor)
+
+					if(lanceLeilao.Valor < itensLeilaoDB[i].ValorInicial) {
+						maiorQueValorInicial = false
+						break
+					}
+					if(lanceLeilao.Valor > apostaAtual.Valor) {
+						itensLeilaoDB[i].ApostaVigente.EmailApostador = comprador.Email
+						itensLeilaoDB[i].ApostaVigente.Valor = lanceLeilao.Valor
+						ehMaiorLance = true
+						fmt.Println("[LEILAO_SERVER]: Leilao alterado", itensLeilaoDB[i].ApostaVigente)
+
+					} else {
+						ehMaiorLance = false
+					}
+					break
+				}
+			}
+			var message string
+
+			if ehMaiorLance {
+				message = "O seu lance foi o maior até o momento"
+			} else {
+				message = "O seu lance foi aceito"
+			}
+			if(!maiorQueValorInicial) {
+				message = "Você precisa colocar um valor maior que o valor inicial"
+			}
+
+			sendMessageToClient(connection, message)
 		}
 	}
 }
@@ -212,7 +259,7 @@ func handleVendedor(connection net.Conn, vendedor DbCliente) {
 			valorInicial, err := strconv.Atoi(itemLeilao.Valor)
 			if err != nil {
 				valorInicial = 0
-				fmt.Println("Erro ao converter valor")
+				fmt.Println("[LEILAO_SERVER] Erro ao converter valor do leilão a ser criado", itemLeilao)
 			}
 			itemLeilaoDB := ItemLeilaoDB{
 				Id:           generateRandomId(),
@@ -246,7 +293,7 @@ func handleVendedor(connection net.Conn, vendedor DbCliente) {
 			var message string
 
 			if foundItem.ApostaVigente.EmailApostador != "" {
-				message = vendedor.Nome + " o leilao com o item " + foundItem.Nome + " foi encerrado com sucesso e o vencedor foi " + foundItem.ApostaVigente.Valor + " com o valor " + string(foundItem.ApostaVigente.Valor)
+				message = vendedor.Nome + " o leilao com o item " + foundItem.Nome + " foi encerrado com sucesso e o vencedor foi " + string(foundItem.ApostaVigente.Valor) + " com o valor " + string(foundItem.ApostaVigente.Valor)
 			} else {
 				message = vendedor.Nome + " o leilao com o item " + foundItem.Nome + " foi encerrado com sucesso mas não teve lances"
 			}
@@ -271,7 +318,7 @@ func handleVendedor(connection net.Conn, vendedor DbCliente) {
 			connection.Close()
 			return
 		default:
-			fmt.Println("Operacao nao reconhecida")
+			fmt.Println("[LEILAO_SERVER] Operacao nao reconhecida")
 			message := "Operação não reconhecida"
 			sendMessageToClient(connection, message)
 		}
@@ -282,7 +329,7 @@ func handleSocketMessage(connection net.Conn) string {
 	buffer := make([]byte, 1024)
 	mLen, err := connection.Read(buffer)
 	handleConnectionError(connection, err, "Perdemos a conexão com o cliente:")
-	fmt.Println("Received: ", string(buffer[:mLen]))
+	fmt.Println("[LEILAO_SERVER] Mensagem recebida no socket: ", string(buffer[:mLen]), "do client", connection.RemoteAddr())
 	return string(buffer[:mLen])
 }
 

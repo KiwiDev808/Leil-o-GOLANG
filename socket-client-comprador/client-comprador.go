@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strconv"
 
 	"github.com/manifoldco/promptui"
 )
@@ -30,12 +31,13 @@ type ItemLeilaoCliente struct {
 	Id            string `json:"id"`
 	Nome          string `json:"nome"`
 	Descricao     string `json:"descricao"`
+	ValorInicial int `json:"valorInicial"`
 	ApostaVigente Aposta `json:"apostaVigente"`
 }
 
 type Aposta struct {
 	EmailApostador string `json:"emailApostador"`
-	Valor          string `json:"valor"`
+	Valor          int `json:"valor"`
 }
 
 type MessageListaDeLeiloes struct {
@@ -43,6 +45,11 @@ type MessageListaDeLeiloes struct {
 }
 type MessageEncerrarLeilao struct {
 	Id string `json:"id"`
+}
+
+type MessageDarLance struct {
+	Id string `json:"id"`
+	Valor int `json:"valor"`
 }
 
 const (
@@ -91,6 +98,9 @@ func main() {
 		_, result, err := prompt.Run()
 
 		handleError(err, "Erro ao selecionar opção: %v\n")
+		if(err != nil) {
+			continue
+		}
 		handleUserResponse(result, connection)
 
 		fmt.Printf("You choose %q\n", result)
@@ -115,11 +125,12 @@ func handleUserResponse(response string, connection net.Conn) {
 		}
 
 		for _, leilao := range listaLeiloes {
-			maiorLance := "Sem lances"
-			if len(leilao.ApostaVigente.Valor) > 0 {
-				maiorLance = leilao.ApostaVigente.Valor
-			}
-			fmt.Printf("Id: %s - Nome: %s - Descricao: %s - Maior Lance: %s\n", leilao.Id, leilao.Nome, leilao.Descricao, maiorLance)
+			var maiorLance string
+			maiorLance = "Sem lances"
+			if(leilao.ApostaVigente != Aposta{}) {
+				maiorLance = strconv.Itoa(leilao.ApostaVigente.Valor)
+			} 
+			fmt.Printf("Id: %s - Nome: %s - Descricao: %s - Valor Inicial: %v - Maior Lance: %s\n", leilao.Id, leilao.Nome, leilao.Descricao, leilao.ValorInicial ,maiorLance)
 		}
 		return
 	case "Dar Lance":
@@ -142,20 +153,41 @@ func handleUserResponse(response string, connection net.Conn) {
 		}
 		i, _, err := prompt.Run()
 
-		handleError(err, "Erro ao dar lance: %v\n")
+		handleError(err, "Erro ao selecionar lance: %v\n")
+		if(err != nil) {
+			return
+		}
 
-		idLeilao, _ := json.Marshal(&MessageEncerrarLeilao{
+		promptValorLance := promptui.Prompt{
+			Label: "Lance",
+		}
+	
+		valor, err1 := promptValorLance.Run()
+		handleError(err1, "Erro ao colocar valor do lance: %v\n")
+		if(err1 != nil) {
+			return
+		}
+
+		valorConvertido, err2 :=strconv.Atoi(valor)
+		handleError(err1, "Erro ao converter valor do lance: %v\n")
+
+		if(err2 != nil) {
+			return
+		}
+
+		lanceLeilao, _ := json.Marshal(&MessageDarLance{
+			Valor: int(valorConvertido),
 			Id: listaLeiloes[i].Id,
 		})
 
-		messageEncerrarLeilao, _ := json.Marshal(&Message{
-			Operacao: "ENCERRAR_LEILAO",
-			Message:  idLeilao,
+		messageDarLance, _ := json.Marshal(&Message{
+			Operacao: "DAR_LANCE",
+			Message:  lanceLeilao,
 		})
-		sendMessageToServer(connection, messageEncerrarLeilao, "Erro ao encerrar leilão: %v\n")
+		sendMessageToServer(connection, messageDarLance, "Erro ao dar lance: %v\n")
 
-		receivedEncerramentoMessage := receiveMessageFromServer(connection)
-		fmt.Print(receivedEncerramentoMessage + "\n")
+		receivedDarLanceMessage := receiveMessageFromServer(connection)
+		fmt.Print(receivedDarLanceMessage + "\n")
 		return
 	case "Sair":
 		messageEncerrarLeilao, _ := json.Marshal(&Message{
